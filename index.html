@@ -9,7 +9,7 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -42,9 +42,17 @@
         const exportButton = document.getElementById('export-button');
         const importButton = document.getElementById('import-button');
         const importFileInput = document.getElementById('import-file-input');
+        const userIdDisplay = document.getElementById('user-id-display');
 
-        // Initialize Firebase
-        function initializeFirebase() {
+        // Initialize Firebase and handle authentication
+        function initializeFirebaseAndAuth() {
+            if (!isOnlineMode) {
+                userIdDisplay.textContent = 'معرف المستخدم: غير متاح (وضع عدم الاتصال)';
+                loadingIndicator.style.display = 'none';
+                disableDatabaseButtons();
+                return;
+            }
+
             try {
                 if (!Object.keys(firebaseConfig).length) {
                     throw new Error("Firebase config is missing. Cannot initialize Firebase.");
@@ -52,29 +60,46 @@
                 const app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
+                
+                // Use onAuthStateChanged to ensure Firebase is ready before any operations
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        userIdDisplay.textContent = `معرف المستخدم: ${userId}`;
+                        recordsCollection = collection(db, `/artifacts/${appId}/users/${userId}/medical_records`);
+                        loadRecords();
+                    } else {
+                        // If not signed in, sign in anonymously or with custom token
+                        try {
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                        } catch (error) {
+                            console.error("Authentication Error:", error);
+                            userIdDisplay.textContent = 'خطأ في المصادقة';
+                            showMessage("خطأ في المصادقة: " + error.message, 'error');
+                        }
+                    }
+                });
             } catch (error) {
                 console.error("Error initializing Firebase:", error);
-                document.getElementById('message-box').textContent = "خطأ في تهيئة Firebase: " + error.message;
+                userIdDisplay.textContent = 'خطأ في التهيئة';
+                showMessage("خطأ في تهيئة Firebase: " + error.message, 'error');
+                disableDatabaseButtons();
             }
         }
 
-        // Handle user authentication
-        async function authenticateUser() {
-            try {
-                let userCredential;
-                if (initialAuthToken) {
-                    userCredential = await signInWithCustomToken(auth, initialAuthToken);
-                } else {
-                    userCredential = await signInAnonymously(auth);
-                }
-                userId = userCredential.user.uid;
-                document.getElementById('user-id-display').textContent = `معرف المستخدم: ${userId}`;
-                recordsCollection = collection(db, `/artifacts/${appId}/users/${userId}/medical_records`);
-                loadRecords();
-            } catch (error) {
-                console.error("Authentication Error:", error);
-                document.getElementById('message-box').textContent = "خطأ في المصادقة: " + error.message;
-            }
+        // Disable buttons related to Firebase operations when offline or not authenticated
+        function disableDatabaseButtons() {
+            saveButton.disabled = true;
+            exportButton.disabled = true;
+            importButton.disabled = true;
+            document.querySelectorAll('.edit-btn, .print-btn, .delete-btn').forEach(btn => {
+                btn.disabled = true;
+                btn.classList.add('opacity-50', 'cursor-not-allowed');
+            });
         }
 
         // Display a temporary message to the user
@@ -89,12 +114,10 @@
 
         // Load records from Firestore and listen for real-time updates
         function loadRecords() {
-            if (!isOnlineMode) {
-                loadingIndicator.style.display = 'none';
-                showMessage("التطبيق يعمل في وضع عدم الاتصال. لا يمكن الوصول إلى قاعدة بيانات Firebase.", 'info');
+            if (!recordsCollection) {
+                console.warn("Records collection is not initialized.");
                 return;
             }
-            if (!recordsCollection) return;
             loadingIndicator.style.display = 'block';
             onSnapshot(recordsCollection, (snapshot) => {
                 records = [];
@@ -195,12 +218,8 @@
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             
-            if (!isOnlineMode) {
+            if (!isOnlineMode || !db) {
                 showMessage("لا يمكن الحفظ في وضع عدم الاتصال.", 'error');
-                return;
-            }
-            if (!db) {
-                showMessage("قاعدة البيانات ليست جاهزة بعد، يرجى المحاولة مرة أخرى.", 'error');
                 return;
             }
 
@@ -528,23 +547,7 @@
 
         // Wait for the window to load before initializing Firebase and auth
         window.onload = function() {
-            if (isOnlineMode) {
-                initializeFirebase();
-                authenticateUser();
-            } else {
-                document.getElementById('user-id-display').textContent = 'معرف المستخدم: غير متاح';
-                loadingIndicator.style.display = 'none';
-                // Disable all Firestore-related buttons
-                saveButton.disabled = true;
-                exportButton.disabled = true;
-                importButton.disabled = true;
-                document.querySelectorAll('button').forEach(btn => {
-                    if (btn.id !== 'clear-button') {
-                        btn.disabled = true;
-                        btn.classList.add('opacity-50', 'cursor-not-allowed');
-                    }
-                });
-            }
+            initializeFirebaseAndAuth();
         };
 
     </script>
@@ -560,7 +563,9 @@
     <div class="max-w-7xl mx-auto bg-white p-8 rounded-xl shadow-lg">
         <h1 class="text-4xl font-extrabold text-center text-gray-800 mb-2">نظام إدخال مطالبات التأمين الصحي</h1>
         <p class="text-center text-gray-500 mb-6">قم بإدخال وتعديل سجلات المرضى بسهولة.</p>
-        <div id="user-id-display" class="text-sm text-gray-600 text-center mb-4"></div>
+        <div id="user-id-display" class="text-sm font-semibold text-indigo-600 text-center mb-4">
+            جارٍ الاتصال بـ Firebase...
+        </div>
 
         <div id="message-box" class="hidden p-3 rounded-lg text-center" role="alert"></div>
 
