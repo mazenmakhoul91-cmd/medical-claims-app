@@ -199,6 +199,10 @@
                 showMessage("لا يمكن الحفظ في وضع عدم الاتصال.", 'error');
                 return;
             }
+            if (!db) {
+                showMessage("قاعدة البيانات ليست جاهزة بعد، يرجى المحاولة مرة أخرى.", 'error');
+                return;
+            }
 
             const formData = new FormData(form);
             const record = {
@@ -362,7 +366,7 @@
 
         // Delete a record
         async function deleteRecord(e) {
-            if (!isOnlineMode) {
+            if (!isOnlineMode || !db) {
                 showMessage("لا يمكن الحذف في وضع عدم الاتصال.", 'error');
                 return;
             }
@@ -414,7 +418,7 @@
 
         // Export data to JSON file (database backup)
         async function exportDatabase() {
-            if (!isOnlineMode || !recordsCollection) {
+            if (!isOnlineMode || !db || !recordsCollection) {
                 showMessage("لا يمكن التصدير: لم يتم تهيئة قاعدة البيانات.", 'error');
                 return;
             }
@@ -450,6 +454,11 @@
         async function importDatabase(e) {
             const file = e.target.files[0];
             if (!file) return;
+
+            if (!isOnlineMode || !db || !recordsCollection) {
+                showMessage("لا يمكن الاستيراد: لم يتم تهيئة قاعدة البيانات.", 'error');
+                return;
+            }
 
             const reader = new FileReader();
             reader.onload = async (event) => {
@@ -525,7 +534,6 @@
             } else {
                 document.getElementById('user-id-display').textContent = 'معرف المستخدم: غير متاح';
                 loadingIndicator.style.display = 'none';
-                showMessage("التطبيق يعمل في وضع عدم الاتصال. لا يمكن الوصول إلى قاعدة بيانات Firebase.", 'info');
                 // Disable all Firestore-related buttons
                 saveButton.disabled = true;
                 exportButton.disabled = true;
