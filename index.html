@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>نظام إدخال مطالبات التأمين الصحي</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Set Firebase log level for debugging
+        setLogLevel('debug');
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth, recordsCollection;
+        let userId = null;
+        let isOnlineMode = window.location.protocol.startsWith('http');
+        
+        // Global state for records, editing, and local attachments
+        let editingId = null;
+        let records = [];
+        let localAttachments = {}; // Stores file data temporarily in the browser
+
+        // Get DOM elements
+        const form = document.getElementById('record-form');
+        const saveButton = document.getElementById('save-button');
+        const clearButton = document.getElementById('clear-button');
+        const recordsTableBody = document.getElementById('records-table-body');
+        const messageBox = document.getElementById('message-box');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const filterColumnSelect = document.getElementById('filter-column-select');
+        const filterInput = document.getElementById('filter-input');
+        const exportButton = document.getElementById('export-button');
+        const importButton = document.getElementById('import-button');
+        const importFileInput = document.getElementById('import-file-input');
+
+        // Initialize Firebase
+        function initializeFirebase() {
+            try {
+                if (!Object.keys(firebaseConfig).length) {
+                    throw new Error("Firebase config is missing. Cannot initialize Firebase.");
+                }
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+            } catch (error) {
+                console.error("Error initializing Firebase:", error);
+                document.getElementById('message-box').textContent = "خطأ في تهيئة Firebase: " + error.message;
+            }
+        }
+
+        // Handle user authentication
+        async function authenticateUser() {
+            try {
+                let userCredential;
+                if (initialAuthToken) {
+                    userCredential = await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    userCredential = await signInAnonymously(auth);
+                }
+                userId = userCredential.user.uid;
+                document.getElementById('user-id-display').textContent = `معرف المستخدم: ${userId}`;
+                recordsCollection = collection(db, `/artifacts/${appId}/users/${userId}/medical_records`);
+                loadRecords();
+            } catch (error) {
+                console.error("Authentication Error:", error);
+                document.getElementById('message-box').textContent = "خطأ في المصادقة: " + error.message;
+            }
+        }
+
+        // Display a temporary message to the user
+        function showMessage(msg, type = 'success') {
+            messageBox.textContent = msg;
+            messageBox.className = `p-3 my-4 text-center rounded-lg ${type === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`;
+            messageBox.style.display = 'block';
+            setTimeout(() => {
+                messageBox.style.display = 'none';
+            }, 5000);
+        }
+
+        // Load records from Firestore and listen for real-time updates
+        function loadRecords() {
+            if (!isOnlineMode) {
+                loadingIndicator.style.display = 'none';
+                showMessage("التطبيق يعمل في وضع عدم الاتصال. لا يمكن الوصول إلى قاعدة بيانات Firebase.", 'info');
+                return;
+            }
+            if (!recordsCollection) return;
+            loadingIndicator.style.display = 'block';
+            onSnapshot(recordsCollection, (snapshot) => {
+                records = [];
+                snapshot.forEach(doc => {
+                    records.push({ id: doc.id, ...doc.data() });
+                });
+                filterAndRenderRecords();
+                loadingIndicator.style.display = 'none';
+            }, (error) => {
+                console.error("Error fetching records:", error);
+                showMessage("خطأ في جلب البيانات: " + error.message, 'error');
+                loadingIndicator.style.display = 'none';
+            });
+        }
+
+        // Filter and render records based on selected column and search input
+        function filterAndRenderRecords() {
+            const searchTerm = filterInput.value.toLowerCase();
+            const selectedColumn = filterColumnSelect.value;
+            
+            const filteredRecords = records.filter(record => {
+                const recordValue = record[selectedColumn] || '';
+                return String(recordValue).toLowerCase().includes(searchTerm);
+            });
+            renderTable(filteredRecords);
+        }
+
+        // Render the records in the table
+        function renderTable(data) {
+            recordsTableBody.innerHTML = '';
+            if (data.length === 0) {
+                recordsTableBody.innerHTML = '<tr><td colspan="20" class="p-4 text-center text-gray-500">لا توجد سجلات مطابقة للبحث.</td></tr>';
+                return;
+            }
+            data.forEach(record => {
+                const row = document.createElement('tr');
+                row.className = 'border-b hover:bg-gray-50';
+                
+                // Get the timestamp and format it to a Gregorian date string
+                const entryDate = record.timestamp ? new Date(record.timestamp).toLocaleDateString('en-US') : '';
+
+                // Check for existence of local attachments for this record
+                const hasLocalAttachments = localAttachments[record.id] && Object.keys(localAttachments[record.id]).length > 0;
+                
+                row.innerHTML = `
+                    <td class="p-3 text-center">${record.approvalNumber || ''}</td>
+                    <td class="p-3 text-center">${record.formNumber || ''}</td>
+                    <td class="p-3 text-center">${record.patientName || ''}</td>
+                    <td class="p-3 text-center">${record.doctorName || ''}</td>
+                    <td class="p-3 text-center">${record.specialization || ''}</td>
+                    <td class="p-3 text-center">${record.treatmentDate || ''}</td>
+                    <td class="p-3 text-center">${record.hospital || ''}</td>
+                    <td class="p-3 text-center">${record.hospitalTreatmentDate || ''}</td>
+                    <td class="p-3 text-center">${record.laboratory || ''}</td>
+                    <td class="p-3 text-center">${record.labTreatmentDate || ''}</td>
+                    <td class="p-3 text-center">${record.pharmacy || ''}</td>
+                    <td class="p-3 text-center">${record.pharmacyTreatmentDate || ''}</td>
+                    <td class="p-3 text-center">${record.radiology || ''}</td>
+                    <td class="p-3 text-center">${record.radiologyTreatmentDate || ''}</td>
+                    <td class="p-3 text-center">${record.formFee || ''}</td>
+                    <td class="p-3 text-center">${record.formDate || ''}</td>
+                    <td class="p-3 text-center">${record.balanceDate || ''}</td>
+                    <td class="p-3 text-center whitespace-nowrap">${entryDate}</td>
+                    <td class="p-3 text-center whitespace-nowrap">
+                        ${hasLocalAttachments ? '<span class="text-green-500">يوجد مرفقات محلية</span>' : '<span class="text-gray-400">لا يوجد مرفقات</span>'}
+                    </td>
+                    <td class="p-3 text-center whitespace-nowrap">
+                        <button class="edit-btn bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-full transition duration-300" data-id="${record.id}">
+                            تعديل
+                        </button>
+                        <button class="print-btn bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded-full transition duration-300 ml-2" data-id="${record.id}">
+                            طباعة
+                        </button>
+                        <button class="delete-btn bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-full transition duration-300 ml-2" data-id="${record.id}">
+                            حذف
+                        </button>
+                    </td>
+                `;
+                recordsTableBody.appendChild(row);
+            });
+            // Add event listeners to buttons after rendering
+            document.querySelectorAll('.edit-btn').forEach(btn => btn.addEventListener('click', editRecord));
+            document.querySelectorAll('.delete-btn').forEach(btn => btn.addEventListener('click', deleteRecord));
+            document.querySelectorAll('.print-btn').forEach(btn => btn.addEventListener('click', printRecord));
+        }
+        
+        // Utility function to convert file to Base64
+        function fileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result.split(',')[1]);
+                reader.onerror = error => reject(error);
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // Save a new record or update an existing one
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            if (!isOnlineMode) {
+                showMessage("لا يمكن الحفظ في وضع عدم الاتصال.", 'error');
+                return;
+            }
+
+            const formData = new FormData(form);
+            const record = {
+                approvalNumber: formData.get('approvalNumber'),
+                formNumber: formData.get('formNumber'),
+                patientName: formData.get('patientName'),
+                doctorName: formData.get('doctorName'),
+                specialization: formData.get('specialization'),
+                treatmentDate: formData.get('treatmentDate'),
+                hospital: formData.get('hospital'),
+                hospitalTreatmentDate: formData.get('hospitalTreatmentDate'),
+                formDate: formData.get('formDate'),
+                balanceDate: formData.get('balanceDate'),
+                laboratory: formData.get('laboratory'),
+                labTreatmentDate: formData.get('labTreatmentDate'),
+                pharmacy: formData.get('pharmacy'),
+                pharmacyTreatmentDate: formData.get('pharmacyTreatmentDate'),
+                radiology: formData.get('radiology'),
+                radiologyTreatmentDate: formData.get('radiologyTreatmentDate'),
+                formFee: formData.get('formFee'),
+                timestamp: Date.now()
+            };
+
+            const files = {};
+            const fileInputs = [
+                { id: 'doctorFile', key: 'doctorFile' },
+                { id: 'hospitalFile', key: 'hospitalFile' },
+                { id: 'laboratoryFile', key: 'laboratoryFile' },
+                { id: 'pharmacyFile', key: 'pharmacyFile' },
+                { id: 'radiologyFile', key: 'radiologyFile' }
+            ];
+
+            // Handle file uploads
+            for (const input of fileInputs) {
+                const file = e.target[input.id].files[0];
+                if (file) {
+                    files[input.key] = {
+                        name: file.name,
+                        type: file.type,
+                        data: await fileToBase64(file)
+                    };
+                }
+            }
+
+            try {
+                let docRef;
+                if (editingId) {
+                    docRef = doc(db, recordsCollection.id, editingId);
+                    await setDoc(docRef, record);
+                    if (Object.keys(files).length > 0) {
+                        localAttachments[editingId] = files;
+                    }
+                    showMessage("تم تحديث السجل بنجاح!");
+                    editingId = null;
+                    saveButton.textContent = "حفظ السجل";
+                } else {
+                    docRef = await addDoc(recordsCollection, record);
+                    if (Object.keys(files).length > 0) {
+                        localAttachments[docRef.id] = files;
+                    }
+                    showMessage("تم حفظ السجل بنجاح!");
+                }
+                clearForm();
+                filterAndRenderRecords(); // Re-render to show new local files
+            } catch (error) {
+                console.error("Error saving record:", error);
+                showMessage("خطأ في حفظ السجل: " + error.message, 'error');
+            }
+        });
+
+        // Edit a record
+        function editRecord(e) {
+            const id = e.target.dataset.id;
+            const record = records.find(r => r.id === id);
+            if (record) {
+                editingId = id;
+                document.getElementById('approvalNumber').value = record.approvalNumber || '';
+                document.getElementById('formNumber').value = record.formNumber || '';
+                document.getElementById('patientName').value = record.patientName || '';
+                document.getElementById('doctorName').value = record.doctorName || '';
+                document.getElementById('specialization').value = record.specialization || '';
+                document.getElementById('treatmentDate').value = record.treatmentDate || '';
+                document.getElementById('hospital').value = record.hospital || '';
+                document.getElementById('hospitalTreatmentDate').value = record.hospitalTreatmentDate || '';
+                document.getElementById('formDate').value = record.formDate || '';
+                document.getElementById('balanceDate').value = record.balanceDate || '';
+                document.getElementById('laboratory').value = record.laboratory || '';
+                document.getElementById('labTreatmentDate').value = record.labTreatmentDate || '';
+                document.getElementById('pharmacy').value = record.pharmacy || '';
+                document.getElementById('pharmacyTreatmentDate').value = record.pharmacyTreatmentDate || '';
+                document.getElementById('radiology').value = record.radiology || '';
+                document.getElementById('radiologyTreatmentDate').value = record.radiologyTreatmentDate || '';
+                document.getElementById('formFee').value = record.formFee || '';
+                saveButton.textContent = "تحديث السجل";
+                showMessage("يمكنك الآن تعديل السجل.", 'info');
+            }
+        }
+        
+        // Print a record
+        function printRecord(e) {
+            const id = e.target.dataset.id;
+            const record = records.find(r => r.id === id);
+            if (!record) {
+                showMessage("السجل غير موجود.", 'error');
+                return;
+            }
+            
+            const entryDate = record.timestamp ? new Date(record.timestamp).toLocaleDateString('en-US') : '';
+
+            const printContent = `
+                <!DOCTYPE html>
+                <html lang="ar" dir="rtl">
+                <head>
+                    <meta charset="UTF-8">
+                    <title>طباعة سجل</title>
+                    <style>
+                        body { font-family: 'Inter', sans-serif; padding: 20px; line-height: 1.6; color: #333; }
+                        h1 { text-align: center; color: #1e40af; margin-bottom: 20px; }
+                        .record-container { border: 1px solid #ddd; padding: 20px; border-radius: 8px; background-color: #f9fafb; max-width: 800px; margin: auto; }
+                        .record-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #eee; }
+                        .record-item:last-child { border-bottom: none; }
+                        .label { font-weight: bold; color: #4b5563; }
+                        .value { text-align: left; }
+                        @media print {
+                            body { -webkit-print-color-adjust: exact; color-adjust: exact; }
+                            .record-container { border: none; box-shadow: none; background-color: white; }
+                        }
+                    </style>
+                </head>
+                <body>
+                    <div class="record-container">
+                        <h1>بيانات السجل الطبي</h1>
+                        <div class="record-item"><span class="label">رقم الموافقة:</span><span class="value">${record.approvalNumber || ''}</span></div>
+                        <div class="record-item"><span class="label">رقم النموذج:</span><span class="value">${record.formNumber || ''}</span></div>
+                        <div class="record-item"><span class="label">اسم المريض:</span><span class="value">${record.patientName || ''}</span></div>
+                        <div class="record-item"><span class="label">اسم الطبيب:</span><span class="value">${record.doctorName || ''}</span></div>
+                        <div class="record-item"><span class="label">التخصص:</span><span class="value">${record.specialization || ''}</span></div>
+                        <div class="record-item"><span class="label">تاريخ المعالجة:</span><span class="value">${record.treatmentDate || ''}</span></div>
+                        <div class="record-item"><span class="label">المستشفى:</span><span class="value">${record.hospital || ''}</span></div>
+                        <div class="record-item"><span class="label">تاريخ معالجة المستشفى:</span><span class="value">${record.hospitalTreatmentDate || ''}</span></div>
+                        <div class="record-item"><span class="label">المختبر:</span><span class="value">${record.laboratory || ''}</span></div>
+                        <div class="record-item"><span class="label">تاريخ معالجة المختبر:</span><span class="value">${record.labTreatmentDate || ''}</span></div>
+                        <div class="record-item"><span class="label">الصيدلية:</span><span class="value">${record.pharmacy || ''}</span></div>
+                        <div class="record-item"><span class="label">تاريخ معالجة الصيدلية:</span><span class="value">${record.pharmacyTreatmentDate || ''}</span></div>
+                        <div class="record-item"><span class="label">الأشعة:</span><span class="value">${record.radiology || ''}</span></div>
+                        <div class="record-item"><span class="label">تاريخ معالجة الأشعة:</span><span class="value">${record.radiologyTreatmentDate || ''}</span></div>
+                        <div class="record-item"><span class="label">رسوم النموذج:</span><span class="value">${record.formFee || ''}</span></div>
+                        <div class="record-item"><span class="label">تاريخ النموذج:</span><span class="value">${record.formDate || ''}</span></div>
+                        <div class="record-item"><span class="label">تاريخ التأثير على الرصيد:</span><span class="value">${record.balanceDate || ''}</span></div>
+                        <div class="record-item"><span class="label">تاريخ الإدخال (ميلادي):</span><span class="value">${entryDate}</span></div>
+                    </div>
+                </body>
+                </html>
+            `;
+            const printWindow = window.open('', '', 'height=600,width=800');
+            printWindow.document.write(printContent);
+            printWindow.document.close();
+            printWindow.focus();
+            printWindow.print();
+        }
+
+        // Delete a record
+        async function deleteRecord(e) {
+            if (!isOnlineMode) {
+                showMessage("لا يمكن الحذف في وضع عدم الاتصال.", 'error');
+                return;
+            }
+
+            const id = e.target.dataset.id;
+            const confirmationModal = document.getElementById('confirmation-modal');
+            const confirmBtn = document.getElementById('confirm-delete');
+            const cancelBtn = document.getElementById('cancel-delete');
+            
+            confirmationModal.classList.remove('hidden');
+
+            const handleConfirm = async () => {
+                try {
+                    await deleteDoc(doc(db, recordsCollection.id, id));
+                    delete localAttachments[id]; // Also remove from local storage
+                    showMessage("تم حذف السجل بنجاح.");
+                } catch (error) {
+                    console.error("Error deleting record:", error);
+                    showMessage("خطأ في حذف السجل: " + error.message, 'error');
+                } finally {
+                    confirmationModal.classList.add('hidden');
+                    confirmBtn.removeEventListener('click', handleConfirm);
+                    cancelBtn.removeEventListener('click', handleCancel);
+                }
+            };
+            
+            const handleCancel = () => {
+                confirmationModal.classList.add('hidden');
+                confirmBtn.removeEventListener('click', handleConfirm);
+                cancelBtn.removeEventListener('click', handleCancel);
+            };
+
+            confirmBtn.addEventListener('click', handleConfirm);
+            cancelBtn.addEventListener('click', handleCancel);
+        }
+
+        // Clear the form
+        function clearForm() {
+            form.reset();
+            editingId = null;
+            saveButton.textContent = "حفظ السجل";
+            showMessage("تم مسح النموذج.", 'info');
+        }
+        clearButton.addEventListener('click', clearForm);
+        
+        // Event listeners for the new filter functionality
+        filterInput.addEventListener('input', filterAndRenderRecords);
+        filterColumnSelect.addEventListener('change', filterAndRenderRecords);
+
+        // Export data to JSON file (database backup)
+        async function exportDatabase() {
+            if (!isOnlineMode || !recordsCollection) {
+                showMessage("لا يمكن التصدير: لم يتم تهيئة قاعدة البيانات.", 'error');
+                return;
+            }
+            try {
+                const querySnapshot = await getDocs(recordsCollection);
+                const allRecords = [];
+                querySnapshot.forEach(doc => {
+                    const record = { id: doc.id, ...doc.data() };
+                    // Merge local attachments with the record data before export
+                    if (localAttachments[record.id]) {
+                        record.attachments = localAttachments[record.id];
+                    }
+                    allRecords.push(record);
+                });
+
+                const jsonContent = JSON.stringify(allRecords, null, 2);
+                const blob = new Blob([jsonContent], { type: 'application/json' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.setAttribute('download', 'medical_records_backup.json');
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                
+                showMessage("تم تصدير قاعدة البيانات بنجاح!", 'success');
+            } catch (error) {
+                console.error("Error exporting data:", error);
+                showMessage("خطأ في تصدير البيانات: " + error.message, 'error');
+            }
+        }
+        
+        // Import data from a JSON file
+        async function importDatabase(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                try {
+                    const importedData = JSON.parse(event.target.result);
+                    if (!Array.isArray(importedData)) {
+                        showMessage("الملف الذي تم تحميله ليس بتنسيق قاعدة بيانات صالح.", 'error');
+                        return;
+                    }
+
+                    // Show confirmation modal
+                    const importConfirmationModal = document.getElementById('import-confirmation-modal');
+                    const confirmImportBtn = document.getElementById('confirm-import');
+                    const cancelImportBtn = document.getElementById('cancel-import');
+                    importConfirmationModal.classList.remove('hidden');
+
+                    const handleConfirm = async () => {
+                        try {
+                            loadingIndicator.style.display = 'block';
+                            for (const record of importedData) {
+                                // Extract attachments to local storage first
+                                if (record.attachments) {
+                                    localAttachments[record.id] = record.attachments;
+                                    delete record.attachments; // Remove attachments from the Firestore record
+                                }
+                                // Save the main record to Firestore
+                                await setDoc(doc(recordsCollection, record.id), record);
+                            }
+                            showMessage("تم استيراد البيانات بنجاح!", 'success');
+                        } catch (error) {
+                            console.error("Error importing data:", error);
+                            showMessage("خطأ في استيراد البيانات: " + error.message, 'error');
+                        } finally {
+                            loadingIndicator.style.display = 'none';
+                            importConfirmationModal.classList.add('hidden');
+                            confirmImportBtn.removeEventListener('click', handleConfirm);
+                            cancelImportBtn.removeEventListener('click', handleCancel);
+                        }
+                    };
+                    
+                    const handleCancel = () => {
+                        importConfirmationModal.classList.add('hidden');
+                        confirmImportBtn.removeEventListener('click', handleConfirm);
+                        cancelImportBtn.removeEventListener('click', handleCancel);
+                    };
+
+                    confirmImportBtn.addEventListener('click', handleConfirm);
+                    cancelImportBtn.addEventListener('click', handleCancel);
+
+                } catch (error) {
+                    showMessage("خطأ في تحليل ملف JSON. تأكد من أن الملف صالح.", 'error');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        // Add event listeners to the export and import buttons
+        exportButton.addEventListener('click', exportDatabase);
+        importButton.addEventListener('click', () => {
+            if (!isOnlineMode) {
+                showMessage("لا يمكن الاستيراد في وضع عدم الاتصال.", 'error');
+                return;
+            }
+            importFileInput.click();
+        });
+        importFileInput.addEventListener('change', importDatabase);
+
+        // Wait for the window to load before initializing Firebase and auth
+        window.onload = function() {
+            if (isOnlineMode) {
+                initializeFirebase();
+                authenticateUser();
+            } else {
+                document.getElementById('user-id-display').textContent = 'معرف المستخدم: غير متاح';
+                loadingIndicator.style.display = 'none';
+                showMessage("التطبيق يعمل في وضع عدم الاتصال. لا يمكن الوصول إلى قاعدة بيانات Firebase.", 'info');
+                // Disable all Firestore-related buttons
+                saveButton.disabled = true;
+                exportButton.disabled = true;
+                importButton.disabled = true;
+                document.querySelectorAll('button').forEach(btn => {
+                    if (btn.id !== 'clear-button') {
+                        btn.disabled = true;
+                        btn.classList.add('opacity-50', 'cursor-not-allowed');
+                    }
+                });
+            }
+        };
+
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+    </style>
+</head>
+<body class="p-6">
+    <div class="max-w-7xl mx-auto bg-white p-8 rounded-xl shadow-lg">
+        <h1 class="text-4xl font-extrabold text-center text-gray-800 mb-2">نظام إدخال مطالبات التأمين الصحي</h1>
+        <p class="text-center text-gray-500 mb-6">قم بإدخال وتعديل سجلات المرضى بسهولة.</p>
+        <div id="user-id-display" class="text-sm text-gray-600 text-center mb-4"></div>
+
+        <div id="message-box" class="hidden p-3 rounded-lg text-center" role="alert"></div>
+
+        <!-- Data Entry Form -->
+        <div class="bg-gray-50 p-6 rounded-xl shadow-inner mb-8">
+            <h2 class="text-2xl font-bold text-gray-700 mb-4">إدخال مطالبة</h2>
+            <form id="record-form" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <!-- First row of inputs -->
+                <div class="col-span-full">
+                    <div class="flex flex-col md:flex-row gap-4">
+                        <div class="flex-1">
+                            <label for="approvalNumber" class="block text-sm font-medium text-gray-700">رقم الموافقة</label>
+                            <input type="text" id="approvalNumber" name="approvalNumber" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                        <div class="flex-1">
+                            <label for="formNumber" class="block text-sm font-medium text-gray-700">رقم النموذج</label>
+                            <input type="text" id="formNumber" name="formNumber" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                        <div class="flex-1">
+                            <label for="patientName" class="block text-sm font-medium text-gray-700">اسم المريض</label>
+                            <input type="text" id="patientName" name="patientName" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Doctor, Specialization, Treatment Date -->
+                <div class="col-span-full">
+                    <h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">بيانات الطبيب والمعالجة</h3>
+                    <div class="flex flex-col md:flex-row gap-4">
+                        <div class="flex-1">
+                            <label for="doctorName" class="block text-sm font-medium text-gray-700">اسم الطبيب</label>
+                            <input type="text" id="doctorName" name="doctorName" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                        <div class="flex-1">
+                            <label for="specialization" class="block text-sm font-medium text-gray-700">التخصص</label>
+                            <input type="text" id="specialization" name="specialization" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                        <div class="flex-1">
+                            <label for="treatmentDate" class="block text-sm font-medium text-gray-700">تاريخ المعالجة</label>
+                            <input type="date" id="treatmentDate" name="treatmentDate" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <label for="doctorFile" class="block text-sm font-medium text-gray-700">مرفقات الطبيب</label>
+                        <input type="file" id="doctorFile" name="doctorFile" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100">
+                    </div>
+                </div>
+
+                <!-- Hospital -->
+                <div class="col-span-full">
+                    <h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">بيانات المستشفى</h3>
+                    <div class="flex flex-col md:flex-row gap-4">
+                        <div class="flex-1">
+                            <label for="hospital" class="block text-sm font-medium text-gray-700">المستشفى</label>
+                            <input type="text" id="hospital" name="hospital" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                        <div class="flex-1">
+                            <label for="hospitalTreatmentDate" class="block text-sm font-medium text-gray-700">تاريخ المعالجة</label>
+                            <input type="date" id="hospitalTreatmentDate" name="hospitalTreatmentDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <label for="hospitalFile" class="block text-sm font-medium text-gray-700">مرفقات المستشفى</label>
+                        <input type="file" id="hospitalFile" name="hospitalFile" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100">
+                    </div>
+                </div>
+
+                <!-- Laboratory -->
+                <div class="col-span-full">
+                    <h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">بيانات المختبر</h3>
+                    <div class="flex flex-col md:flex-row gap-4">
+                        <div class="flex-1">
+                            <label for="laboratory" class="block text-sm font-medium text-gray-700">المختبر</label>
+                            <input type="text" id="laboratory" name="laboratory" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                        <div class="flex-1">
+                            <label for="labTreatmentDate" class="block text-sm font-medium text-gray-700">تاريخ المعالجة</label>
+                            <input type="date" id="labTreatmentDate" name="labTreatmentDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <label for="laboratoryFile" class="block text-sm font-medium text-gray-700">مرفقات المختبر</label>
+                        <input type="file" id="laboratoryFile" name="laboratoryFile" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100">
+                    </div>
+                </div>
+
+                <!-- Pharmacy -->
+                <div class="col-span-full">
+                    <h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">بيانات الصيدلية</h3>
+                    <div class="flex flex-col md:flex-row gap-4">
+                        <div class="flex-1">
+                            <label for="pharmacy" class="block text-sm font-medium text-gray-700">الصيدلية</label>
+                            <input type="text" id="pharmacy" name="pharmacy" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                        <div class="flex-1">
+                            <label for="pharmacyTreatmentDate" class="block text-sm font-medium text-gray-700">تاريخ المعالجة</label>
+                            <input type="date" id="pharmacyTreatmentDate" name="pharmacyTreatmentDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <label for="pharmacyFile" class="block text-sm font-medium text-gray-700">مرفقات الصيدلية</label>
+                        <input type="file" id="pharmacyFile" name="pharmacyFile" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100">
+                    </div>
+                </div>
+
+                <!-- Radiology -->
+                <div class="col-span-full">
+                    <h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">بيانات الأشعة</h3>
+                    <div class="flex flex-col md:flex-row gap-4">
+                        <div class="flex-1">
+                            <label for="radiology" class="block text-sm font-medium text-gray-700">الأشعة</label>
+                            <input type="text" id="radiology" name="radiology" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                        <div class="flex-1">
+                            <label for="radiologyTreatmentDate" class="block text-sm font-medium text-gray-700">تاريخ المعالجة</label>
+                            <input type="date" id="radiologyTreatmentDate" name="radiologyTreatmentDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <label for="radiologyFile" class="block text-sm font-medium text-gray-700">مرفقات الأشعة</label>
+                        <input type="file" id="radiologyFile" name="radiologyFile" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100">
+                    </div>
+                </div>
+
+
+                <!-- Other dates and fees -->
+                <div class="col-span-full">
+                    <h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">بيانات إضافية</h3>
+                    <div class="flex flex-col md:flex-row gap-4">
+                        <div class="flex-1">
+                            <label for="formDate" class="block text-sm font-medium text-gray-700">تاريخ النموذج</label>
+                            <input type="date" id="formDate" name="formDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                        <div class="flex-1">
+                            <label for="balanceDate" class="block text-sm font-medium text-gray-700">تاريخ التأثير على الرصيد</label>
+                            <input type="date" id="balanceDate" name="balanceDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                        <div class="flex-1">
+                            <label for="formFee" class="block text-sm font-medium text-gray-700">رسوم النموذج</label>
+                            <input type="number" id="formFee" name="formFee" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-span-full flex justify-center gap-4 mt-8">
+                    <button type="submit" id="save-button" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transition duration-300 ease-in-out transform hover:scale-105">
+                        حفظ السجل
+                    </button>
+                    <button type="button" id="clear-button" class="bg-gray-400 hover:bg-gray-500 text-white font-bold py-3 px-8 rounded-full shadow-lg transition duration-300 ease-in-out transform hover:scale-105">
+                        مسح النموذج
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Records Table -->
+        <div>
+            <h2 class="text-2xl font-bold text-gray-700 mb-4">السجلات المحفوظة</h2>
+            <div class="mb-4 flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-4">
+                <div class="flex-1 flex items-center space-x-2 w-full sm:w-auto">
+                    <label for="filter-column-select" class="text-sm font-medium text-gray-700 whitespace-nowrap">البحث حسب:</label>
+                    <select id="filter-column-select" class="block w-full sm:w-48 rounded-md border-gray-300 shadow-sm p-2 focus:ring-indigo-500 focus:border-indigo-500">
+                        <option value="patientName">اسم المريض</option>
+                        <option value="approvalNumber">رقم الموافقة</option>
+                        <option value="formNumber">رقم النموذج</option>
+                        <option value="doctorName">اسم الطبيب</option>
+                        <option value="specialization">التخصص</option>
+                        <option value="treatmentDate">تاريخ المعالجة</option>
+                        <option value="hospital">المستشفى</option>
+                        <option value="hospitalTreatmentDate">تاريخ معالجة المستشفى</option>
+                        <option value="laboratory">المختبر</option>
+                        <option value="labTreatmentDate">تاريخ معالجة المختبر</option>
+                        <option value="pharmacy">الصيدلية</option>
+                        <option value="pharmacyTreatmentDate">تاريخ معالجة الصيدلية</option>
+                        <option value="radiology">الأشعة</option>
+                        <option value="radiologyTreatmentDate">تاريخ معالجة الأشعة</option>
+                        <option value="formFee">رسوم النموذج</option>
+                        <option value="formDate">تاريخ النموذج</option>
+                        <option value="balanceDate">تاريخ الرصيد</option>
+                    </select>
+                </div>
+                <div class="flex-1 w-full sm:w-auto">
+                    <input type="text" id="filter-input" placeholder="اكتب للبحث..." class="w-full rounded-md border-gray-300 shadow-sm p-2">
+                </div>
+            </div>
+            <div id="loading-indicator" class="text-center p-4 text-indigo-600 font-semibold" style="display: none;">جاري تحميل البيانات...</div>
+            <div class="overflow-x-auto relative shadow-md rounded-xl">
+                <table class="w-full text-sm text-right text-gray-500">
+                    <thead class="text-xs text-gray-700 uppercase bg-gray-200">
+                        <tr>
+                            <th scope="col" class="py-3 px-6 text-center">رقم الموافقة</th>
+                            <th scope="col" class="py-3 px-6 text-center">رقم النموذج</th>
+                            <th scope="col" class="py-3 px-6 text-center">اسم المريض</th>
+                            <th scope="col" class="py-3 px-6 text-center">اسم الطبيب</th>
+                            <th scope="col" class="py-3 px-6 text-center">التخصص</th>
+                            <th scope="col" class="py-3 px-6 text-center">تاريخ المعالجة</th>
+                            <th scope="col" class="py-3 px-6 text-center">المستشفى</th>
+                            <th scope="col" class="py-3 px-6 text-center">تاريخ معالجة المستشفى</th>
+                            <th scope="col" class="py-3 px-6 text-center">المختبر</th>
+                            <th scope="col" class="py-3 px-6 text-center">تاريخ معالجة المختبر</th>
+                            <th scope="col" class="py-3 px-6 text-center">الصيدلية</th>
+                            <th scope="col" class="py-3 px-6 text-center">تاريخ معالجة الصيدلية</th>
+                            <th scope="col" class="py-3 px-6 text-center">الاشعة</th>
+                            <th scope="col" class="py-3 px-6 text-center">تاريخ معالجة الأشعة</th>
+                            <th scope="col" class="py-3 px-6 text-center">رسوم النموذج</th>
+                            <th scope="col" class="py-3 px-6 text-center">تاريخ النموذج</th>
+                            <th scope="col" class="py-3 px-6 text-center">تاريخ التأثير على الرصيد</th>
+                            <th scope="col" class="py-3 px-6 text-center">تاريخ الإدخال (ميلادي)</th>
+                            <th scope="col" class="py-3 px-6 text-center">المرفقات</th>
+                            <th scope="col" class="py-3 px-6 text-center">إجراءات</th>
+                        </tr>
+                    </thead>
+                    <tbody id="records-table-body" class="bg-white divide-y divide-gray-200">
+                        <!-- Records will be dynamically inserted here -->
+                    </tbody>
+                </table>
+            </div>
+            <!-- Buttons moved here -->
+            <div class="mt-4 flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4 justify-center">
+                <button id="export-button" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-full transition duration-300 ease-in-out transform hover:scale-105 whitespace-nowrap">
+                    تصدير قاعدة بيانات
+                </button>
+                <button id="import-button" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-full transition duration-300 ease-in-out transform hover:scale-105 whitespace-nowrap">
+                    استيراد قاعدة بيانات
+                </button>
+                <input type="file" id="import-file-input" class="hidden" accept=".json">
+            </div>
+        </div>
+    </div>
+    
+    <!-- Custom Confirmation Modal (replaces alert/confirm) -->
+    <div id="confirmation-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
+        <div class="relative bg-white p-8 rounded-lg shadow-xl max-w-sm mx-auto text-center">
+            <h3 class="text-lg font-bold text-gray-900 mb-4">تأكيد الحذف</h3>
+            <p class="text-sm text-gray-500 mb-6">هل أنت متأكد من أنك تريد حذف هذا السجل؟</p>
+            <div class="flex justify-center space-x-4">
+                <button id="cancel-delete" class="px-4 py-2 bg-gray-300 text-gray-800 rounded-full hover:bg-gray-400 transition-colors">إلغاء</button>
+                <button id="confirm-delete" class="px-4 py-2 bg-red-600 text-white rounded-full hover:bg-red-700 transition-colors">حذف</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="import-confirmation-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
+        <div class="relative bg-white p-8 rounded-lg shadow-xl max-w-sm mx-auto text-center">
+            <h3 class="text-lg font-bold text-gray-900 mb-4">تأكيد الاستيراد</h3>
+            <p class="text-sm text-gray-500 mb-6">سيتم إضافة السجلات الجديدة إلى قاعدة البيانات الحالية. هل أنت متأكد من المتابعة؟</p>
+            <div class="flex justify-center space-x-4">
+                <button id="cancel-import" class="px-4 py-2 bg-gray-300 text-gray-800 rounded-full hover:bg-gray-400 transition-colors">إلغاء</button>
+                <button id="confirm-import" class="px-4 py-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors">تأكيد</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
