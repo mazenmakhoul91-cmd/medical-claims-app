@@ -18,7 +18,7 @@
 
         // Global variables provided by the environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         let db, auth, recordsCollection;
@@ -53,10 +53,17 @@
                 return;
             }
 
+            // Check if Firebase config is provided
+            if (!firebaseConfig) {
+                const errorMessage = "خطأ في التهيئة: Firebase config is missing. Cannot initialize Firebase.";
+                userIdDisplay.textContent = 'خطأ في التهيئة';
+                showMessage(errorMessage, 'error');
+                console.error(errorMessage);
+                disableDatabaseButtons();
+                return;
+            }
+
             try {
-                if (!Object.keys(firebaseConfig).length) {
-                    throw new Error("Firebase config is missing. Cannot initialize Firebase.");
-                }
                 const app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
