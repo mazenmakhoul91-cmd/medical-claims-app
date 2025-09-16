@@ -9,7 +9,7 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -18,12 +18,10 @@
 
         // Global variables provided by the environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         let db, auth, recordsCollection;
         let userId = null;
-        let isOnlineMode = window.location.protocol.startsWith('http');
         
         // Global state for records, editing, and local attachments
         let editingId = null;
@@ -43,26 +41,50 @@
         const importButton = document.getElementById('import-button');
         const importFileInput = document.getElementById('import-file-input');
         const userIdDisplay = document.getElementById('user-id-display');
+        const statusText = document.getElementById('status-text');
+        const statusIcon = document.getElementById('status-icon');
 
-        // Initialize Firebase and handle authentication
-        function initializeFirebaseAndAuth() {
-            if (!isOnlineMode) {
-                userIdDisplay.textContent = 'معرف المستخدم: غير متاح (وضع عدم الاتصال)';
-                loadingIndicator.style.display = 'none';
-                disableDatabaseButtons();
-                return;
+        function updateStatus(isOnline) {
+            if (isOnline) {
+                statusIcon.className = 'rounded-full h-24 w-24 mx-auto flex items-center justify-center mb-4 transition-all duration-500 bg-green-500';
+                statusIcon.innerHTML = '<svg class="w-12 h-12 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>';
+                statusText.textContent = "متصل";
+                userIdDisplay.style.color = 'rgb(34 197 94)'; // green
+                
+            } else {
+                statusIcon.className = 'rounded-full h-24 w-24 mx-auto flex items-center justify-center mb-4 transition-all duration-500 bg-gray-400';
+                statusIcon.innerHTML = '<svg class="w-12 h-12 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 13.293a1 1 0 001.414 0L14 9.414V13a1 1 0 102 0V6a1 1 0 00-1-1H9a1 1 0 100 2h3.586L9.707 9.707a1 1 0 000 1.414l-1 1a1 1 0 000 1.414z" clip-rule="evenodd"></path></svg>';
+                statusText.textContent = "غير متصل";
+                userIdDisplay.style.color = 'rgb(156 163 175)'; // gray
             }
-
-            // Check if Firebase config is provided
-            if (!firebaseConfig) {
-                const errorMessage = "خطأ في التهيئة: Firebase config is missing. Cannot initialize Firebase.";
+        }
+        
+        // Check for Firebase config and initialize the application
+        function checkFirebaseConfigAndInitialize() {
+            let firebaseConfig = null;
+            try {
+                if (typeof __firebase_config !== 'undefined' && __firebase_config && __firebase_config.trim() !== '') {
+                    firebaseConfig = JSON.parse(__firebase_config);
+                }
+            } catch (e) {
+                console.error("خطأ في تحليل إعدادات Firebase:", e);
+            }
+            
+            if (!firebaseConfig || !firebaseConfig.projectId) {
+                const errorMessage = "خطأ في التهيئة: لم يتم العثور على إعدادات Firebase. لا يمكن تهيئة التطبيق.";
                 userIdDisplay.textContent = 'خطأ في التهيئة';
                 showMessage(errorMessage, 'error');
-                console.error(errorMessage);
+                console.error(errorMessage, "Received config string was:", typeof __firebase_config !== 'undefined' ? __firebase_config : 'undefined');
                 disableDatabaseButtons();
+                updateStatus(false);
                 return;
             }
+            
+            initializeFirebaseAndAuth(firebaseConfig);
+        }
 
+        // Initialize Firebase and handle authentication
+        function initializeFirebaseAndAuth(firebaseConfig) {
             try {
                 const app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
@@ -75,6 +97,7 @@
                         userIdDisplay.textContent = `معرف المستخدم: ${userId}`;
                         recordsCollection = collection(db, `/artifacts/${appId}/users/${userId}/medical_records`);
                         loadRecords();
+                        updateStatus(true);
                     } else {
                         // If not signed in, sign in anonymously or with custom token
                         try {
@@ -87,6 +110,7 @@
                             console.error("Authentication Error:", error);
                             userIdDisplay.textContent = 'خطأ في المصادقة';
                             showMessage("خطأ في المصادقة: " + error.message, 'error');
+                            updateStatus(false);
                         }
                     }
                 });
@@ -95,6 +119,7 @@
                 userIdDisplay.textContent = 'خطأ في التهيئة';
                 showMessage("خطأ في تهيئة Firebase: " + error.message, 'error');
                 disableDatabaseButtons();
+                updateStatus(false);
             }
         }
 
@@ -125,7 +150,7 @@
                 console.warn("Records collection is not initialized.");
                 return;
             }
-            loadingIndicator.style.display = 'block';
+            loadingIndicator.style.display = 'flex';
             onSnapshot(recordsCollection, (snapshot) => {
                 records = [];
                 snapshot.forEach(doc => {
@@ -225,8 +250,8 @@
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             
-            if (!isOnlineMode || !db) {
-                showMessage("لا يمكن الحفظ في وضع عدم الاتصال.", 'error');
+            if (!db) {
+                showMessage("لا يمكن الحفظ، لم يتم الاتصال بقاعدة البيانات.", 'error');
                 return;
             }
 
@@ -276,7 +301,7 @@
             try {
                 let docRef;
                 if (editingId) {
-                    docRef = doc(db, recordsCollection.id, editingId);
+                    docRef = doc(db, `artifacts/${appId}/users/${userId}/medical_records`, editingId);
                     await setDoc(docRef, record);
                     if (Object.keys(files).length > 0) {
                         localAttachments[editingId] = files;
@@ -324,6 +349,7 @@
                 document.getElementById('formFee').value = record.formFee || '';
                 saveButton.textContent = "تحديث السجل";
                 showMessage("يمكنك الآن تعديل السجل.", 'info');
+                window.scrollTo(0, 0);
             }
         }
         
@@ -345,7 +371,7 @@
                     <meta charset="UTF-8">
                     <title>طباعة سجل</title>
                     <style>
-                        body { font-family: 'Inter', sans-serif; padding: 20px; line-height: 1.6; color: #333; }
+                        body { font-family: 'Cairo', sans-serif; padding: 20px; line-height: 1.6; color: #333; }
                         h1 { text-align: center; color: #1e40af; margin-bottom: 20px; }
                         .record-container { border: 1px solid #ddd; padding: 20px; border-radius: 8px; background-color: #f9fafb; max-width: 800px; margin: auto; }
                         .record-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #eee; }
@@ -392,8 +418,8 @@
 
         // Delete a record
         async function deleteRecord(e) {
-            if (!isOnlineMode || !db) {
-                showMessage("لا يمكن الحذف في وضع عدم الاتصال.", 'error');
+             if (!db) {
+                showMessage("لا يمكن الحذف، لم يتم الاتصال بقاعدة البيانات.", 'error');
                 return;
             }
 
@@ -406,7 +432,7 @@
 
             const handleConfirm = async () => {
                 try {
-                    await deleteDoc(doc(db, recordsCollection.id, id));
+                    await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/medical_records`, id));
                     delete localAttachments[id]; // Also remove from local storage
                     showMessage("تم حذف السجل بنجاح.");
                 } catch (error) {
@@ -444,7 +470,7 @@
 
         // Export data to JSON file (database backup)
         async function exportDatabase() {
-            if (!isOnlineMode || !db || !recordsCollection) {
+            if (!db || !recordsCollection) {
                 showMessage("لا يمكن التصدير: لم يتم تهيئة قاعدة البيانات.", 'error');
                 return;
             }
@@ -481,7 +507,7 @@
             const file = e.target.files[0];
             if (!file) return;
 
-            if (!isOnlineMode || !db || !recordsCollection) {
+            if (!db || !recordsCollection) {
                 showMessage("لا يمكن الاستيراد: لم يتم تهيئة قاعدة البيانات.", 'error');
                 return;
             }
@@ -503,7 +529,7 @@
 
                     const handleConfirm = async () => {
                         try {
-                            loadingIndicator.style.display = 'block';
+                            loadingIndicator.style.display = 'flex';
                             for (const record of importedData) {
                                 // Extract attachments to local storage first
                                 if (record.attachments) {
@@ -544,7 +570,7 @@
         // Add event listeners to the export and import buttons
         exportButton.addEventListener('click', exportDatabase);
         importButton.addEventListener('click', () => {
-            if (!isOnlineMode) {
+            if (!db) {
                 showMessage("لا يمكن الاستيراد في وضع عدم الاتصال.", 'error');
                 return;
             }
@@ -554,276 +580,239 @@
 
         // Wait for the window to load before initializing Firebase and auth
         window.onload = function() {
-            initializeFirebaseAndAuth();
+            checkFirebaseConfigAndInitialize();
         };
 
     </script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap');
         body {
-            font-family: 'Inter', sans-serif;
+            font-family: 'Cairo', sans-serif;
             background-color: #f3f4f6;
         }
     </style>
 </head>
 <body class="p-6">
     <div class="max-w-7xl mx-auto bg-white p-8 rounded-xl shadow-lg">
-        <h1 class="text-4xl font-extrabold text-center text-gray-800 mb-2">نظام إدخال مطالبات التأمين الصحي</h1>
-        <p class="text-center text-gray-500 mb-6">قم بإدخال وتعديل سجلات المرضى بسهولة.</p>
-        <div id="user-id-display" class="text-sm font-semibold text-indigo-600 text-center mb-4">
-            جارٍ الاتصال بـ Firebase...
+        <div class="flex flex-col md:flex-row justify-between items-center mb-6 border-b pb-4">
+            <h1 class="text-4xl font-bold text-blue-800 mb-4 md:mb-0">نظام إدخال مطالبات التأمين الصحي</h1>
+            <div class="text-center">
+                <div id="status-icon" class="rounded-full h-24 w-24 mx-auto flex items-center justify-center mb-4 transition-all duration-500 bg-gray-400">
+                     <!-- Icon will be inserted by JS -->
+                </div>
+                <p id="status-text" class="text-lg font-semibold text-gray-700">جارٍ التحقق...</p>
+                <p id="user-id-display" class="text-sm font-mono mt-2 text-gray-500">جارٍ تهيئة المستخدم...</p>
+            </div>
         </div>
 
-        <div id="message-box" class="hidden p-3 rounded-lg text-center" role="alert"></div>
+        <div id="message-box" class="hidden"></div>
 
-        <!-- Data Entry Form -->
-        <div class="bg-gray-50 p-6 rounded-xl shadow-inner mb-8">
-            <h2 class="text-2xl font-bold text-gray-700 mb-4">إدخال مطالبة</h2>
-            <form id="record-form" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                <!-- First row of inputs -->
-                <div class="col-span-full">
-                    <div class="flex flex-col md:flex-row gap-4">
-                        <div class="flex-1">
-                            <label for="approvalNumber" class="block text-sm font-medium text-gray-700">رقم الموافقة</label>
-                            <input type="text" id="approvalNumber" name="approvalNumber" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                        <div class="flex-1">
-                            <label for="formNumber" class="block text-sm font-medium text-gray-700">رقم النموذج</label>
-                            <input type="text" id="formNumber" name="formNumber" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                        <div class="flex-1">
-                            <label for="patientName" class="block text-sm font-medium text-gray-700">اسم المريض</label>
-                            <input type="text" id="patientName" name="patientName" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                    </div>
+        <form id="record-form" class="space-y-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <!-- Data Fields -->
+                <div>
+                    <label for="approvalNumber" class="block text-sm font-medium text-gray-700">رقم الموافقة</label>
+                    <input type="text" id="approvalNumber" name="approvalNumber" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
                 </div>
-
-                <!-- Doctor, Specialization, Treatment Date -->
-                <div class="col-span-full">
-                    <h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">بيانات الطبيب والمعالجة</h3>
-                    <div class="flex flex-col md:flex-row gap-4">
-                        <div class="flex-1">
-                            <label for="doctorName" class="block text-sm font-medium text-gray-700">اسم الطبيب</label>
-                            <input type="text" id="doctorName" name="doctorName" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                        <div class="flex-1">
-                            <label for="specialization" class="block text-sm font-medium text-gray-700">التخصص</label>
-                            <input type="text" id="specialization" name="specialization" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                        <div class="flex-1">
-                            <label for="treatmentDate" class="block text-sm font-medium text-gray-700">تاريخ المعالجة</label>
-                            <input type="date" id="treatmentDate" name="treatmentDate" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                    </div>
-                    <div class="mt-4">
-                        <label for="doctorFile" class="block text-sm font-medium text-gray-700">مرفقات الطبيب</label>
-                        <input type="file" id="doctorFile" name="doctorFile" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100">
-                    </div>
+                <div>
+                    <label for="formNumber" class="block text-sm font-medium text-gray-700">رقم النموذج</label>
+                    <input type="text" id="formNumber" name="formNumber" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
                 </div>
-
-                <!-- Hospital -->
-                <div class="col-span-full">
-                    <h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">بيانات المستشفى</h3>
-                    <div class="flex flex-col md:flex-row gap-4">
-                        <div class="flex-1">
-                            <label for="hospital" class="block text-sm font-medium text-gray-700">المستشفى</label>
-                            <input type="text" id="hospital" name="hospital" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                        <div class="flex-1">
-                            <label for="hospitalTreatmentDate" class="block text-sm font-medium text-gray-700">تاريخ المعالجة</label>
-                            <input type="date" id="hospitalTreatmentDate" name="hospitalTreatmentDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                    </div>
-                    <div class="mt-4">
-                        <label for="hospitalFile" class="block text-sm font-medium text-gray-700">مرفقات المستشفى</label>
-                        <input type="file" id="hospitalFile" name="hospitalFile" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100">
-                    </div>
+                 <div>
+                    <label for="patientName" class="block text-sm font-medium text-gray-700">اسم المريض</label>
+                    <input type="text" id="patientName" name="patientName" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
                 </div>
-
-                <!-- Laboratory -->
-                <div class="col-span-full">
-                    <h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">بيانات المختبر</h3>
-                    <div class="flex flex-col md:flex-row gap-4">
-                        <div class="flex-1">
-                            <label for="laboratory" class="block text-sm font-medium text-gray-700">المختبر</label>
-                            <input type="text" id="laboratory" name="laboratory" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                        <div class="flex-1">
-                            <label for="labTreatmentDate" class="block text-sm font-medium text-gray-700">تاريخ المعالجة</label>
-                            <input type="date" id="labTreatmentDate" name="labTreatmentDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                    </div>
-                    <div class="mt-4">
-                        <label for="laboratoryFile" class="block text-sm font-medium text-gray-700">مرفقات المختبر</label>
-                        <input type="file" id="laboratoryFile" name="laboratoryFile" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100">
-                    </div>
+                <div>
+                    <label for="doctorName" class="block text-sm font-medium text-gray-700">اسم الطبيب</label>
+                    <input type="text" id="doctorName" name="doctorName" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
                 </div>
-
-                <!-- Pharmacy -->
-                <div class="col-span-full">
-                    <h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">بيانات الصيدلية</h3>
-                    <div class="flex flex-col md:flex-row gap-4">
-                        <div class="flex-1">
-                            <label for="pharmacy" class="block text-sm font-medium text-gray-700">الصيدلية</label>
-                            <input type="text" id="pharmacy" name="pharmacy" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                        <div class="flex-1">
-                            <label for="pharmacyTreatmentDate" class="block text-sm font-medium text-gray-700">تاريخ المعالجة</label>
-                            <input type="date" id="pharmacyTreatmentDate" name="pharmacyTreatmentDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                    </div>
-                    <div class="mt-4">
-                        <label for="pharmacyFile" class="block text-sm font-medium text-gray-700">مرفقات الصيدلية</label>
-                        <input type="file" id="pharmacyFile" name="pharmacyFile" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100">
-                    </div>
+                 <div>
+                    <label for="specialization" class="block text-sm font-medium text-gray-700">التخصص</label>
+                    <input type="text" id="specialization" name="specialization" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
                 </div>
-
-                <!-- Radiology -->
-                <div class="col-span-full">
-                    <h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">بيانات الأشعة</h3>
-                    <div class="flex flex-col md:flex-row gap-4">
-                        <div class="flex-1">
-                            <label for="radiology" class="block text-sm font-medium text-gray-700">الأشعة</label>
-                            <input type="text" id="radiology" name="radiology" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                        <div class="flex-1">
-                            <label for="radiologyTreatmentDate" class="block text-sm font-medium text-gray-700">تاريخ المعالجة</label>
-                            <input type="date" id="radiologyTreatmentDate" name="radiologyTreatmentDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                    </div>
-                    <div class="mt-4">
-                        <label for="radiologyFile" class="block text-sm font-medium text-gray-700">مرفقات الأشعة</label>
-                        <input type="file" id="radiologyFile" name="radiologyFile" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100">
-                    </div>
+                <div>
+                    <label for="treatmentDate" class="block text-sm font-medium text-gray-700">تاريخ المعالجة</label>
+                    <input type="date" id="treatmentDate" name="treatmentDate" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
                 </div>
-
-
-                <!-- Other dates and fees -->
-                <div class="col-span-full">
-                    <h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">بيانات إضافية</h3>
-                    <div class="flex flex-col md:flex-row gap-4">
-                        <div class="flex-1">
-                            <label for="formDate" class="block text-sm font-medium text-gray-700">تاريخ النموذج</label>
-                            <input type="date" id="formDate" name="formDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                        <div class="flex-1">
-                            <label for="balanceDate" class="block text-sm font-medium text-gray-700">تاريخ التأثير على الرصيد</label>
-                            <input type="date" id="balanceDate" name="balanceDate" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                        <div class="flex-1">
-                            <label for="formFee" class="block text-sm font-medium text-gray-700">رسوم النموذج</label>
-                            <input type="number" id="formFee" name="formFee" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
-                        </div>
-                    </div>
+                <div>
+                    <label for="hospital" class="block text-sm font-medium text-gray-700">المستشفى</label>
+                    <input type="text" id="hospital" name="hospital" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
                 </div>
-
-                <div class="col-span-full flex justify-center gap-4 mt-8">
-                    <button type="submit" id="save-button" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transition duration-300 ease-in-out transform hover:scale-105">
-                        حفظ السجل
-                    </button>
-                    <button type="button" id="clear-button" class="bg-gray-400 hover:bg-gray-500 text-white font-bold py-3 px-8 rounded-full shadow-lg transition duration-300 ease-in-out transform hover:scale-105">
-                        مسح النموذج
-                    </button>
+                <div>
+                    <label for="hospitalTreatmentDate" class="block text-sm font-medium text-gray-700">تاريخ معالجة المستشفى</label>
+                    <input type="date" id="hospitalTreatmentDate" name="hospitalTreatmentDate" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
                 </div>
-            </form>
-        </div>
-
-        <!-- Records Table -->
-        <div>
-            <h2 class="text-2xl font-bold text-gray-700 mb-4">السجلات المحفوظة</h2>
-            <div class="mb-4 flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-4">
-                <div class="flex-1 flex items-center space-x-2 w-full sm:w-auto">
-                    <label for="filter-column-select" class="text-sm font-medium text-gray-700 whitespace-nowrap">البحث حسب:</label>
-                    <select id="filter-column-select" class="block w-full sm:w-48 rounded-md border-gray-300 shadow-sm p-2 focus:ring-indigo-500 focus:border-indigo-500">
-                        <option value="patientName">اسم المريض</option>
-                        <option value="approvalNumber">رقم الموافقة</option>
-                        <option value="formNumber">رقم النموذج</option>
-                        <option value="doctorName">اسم الطبيب</option>
-                        <option value="specialization">التخصص</option>
-                        <option value="treatmentDate">تاريخ المعالجة</option>
-                        <option value="hospital">المستشفى</option>
-                        <option value="hospitalTreatmentDate">تاريخ معالجة المستشفى</option>
-                        <option value="laboratory">المختبر</option>
-                        <option value="labTreatmentDate">تاريخ معالجة المختبر</option>
-                        <option value="pharmacy">الصيدلية</option>
-                        <option value="pharmacyTreatmentDate">تاريخ معالجة الصيدلية</option>
-                        <option value="radiology">الأشعة</option>
-                        <option value="radiologyTreatmentDate">تاريخ معالجة الأشعة</option>
-                        <option value="formFee">رسوم النموذج</option>
-                        <option value="formDate">تاريخ النموذج</option>
-                        <option value="balanceDate">تاريخ الرصيد</option>
-                    </select>
+                <div>
+                    <label for="laboratory" class="block text-sm font-medium text-gray-700">المختبر</label>
+                    <input type="text" id="laboratory" name="laboratory" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
                 </div>
-                <div class="flex-1 w-full sm:w-auto">
-                    <input type="text" id="filter-input" placeholder="اكتب للبحث..." class="w-full rounded-md border-gray-300 shadow-sm p-2">
+                <div>
+                    <label for="labTreatmentDate" class="block text-sm font-medium text-gray-700">تاريخ معالجة المختبر</label>
+                    <input type="date" id="labTreatmentDate" name="labTreatmentDate" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+                <div>
+                    <label for="pharmacy" class="block text-sm font-medium text-gray-700">الصيدلية</label>
+                    <input type="text" id="pharmacy" name="pharmacy" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+                <div>
+                    <label for="pharmacyTreatmentDate" class="block text-sm font-medium text-gray-700">تاريخ معالجة الصيدلية</label>
+                    <input type="date" id="pharmacyTreatmentDate" name="pharmacyTreatmentDate" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+                <div>
+                    <label for="radiology" class="block text-sm font-medium text-gray-700">الأشعة</label>
+                    <input type="text" id="radiology" name="radiology" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+                <div>
+                    <label for="radiologyTreatmentDate" class="block text-sm font-medium text-gray-700">تاريخ معالجة الأشعة</label>
+                    <input type="date" id="radiologyTreatmentDate" name="radiologyTreatmentDate" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+                <div>
+                    <label for="formFee" class="block text-sm font-medium text-gray-700">رسوم النموذج</label>
+                    <input type="number" step="0.01" id="formFee" name="formFee" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+                <div>
+                    <label for="formDate" class="block text-sm font-medium text-gray-700">تاريخ النموذج</label>
+                    <input type="date" id="formDate" name="formDate" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+                <div>
+                    <label for="balanceDate" class="block text-sm font-medium text-gray-700">تاريخ التأثير على الرصيد</label>
+                    <input type="date" id="balanceDate" name="balanceDate" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
                 </div>
             </div>
-            <div id="loading-indicator" class="text-center p-4 text-indigo-600 font-semibold" style="display: none;">جاري تحميل البيانات...</div>
-            <div class="overflow-x-auto relative shadow-md rounded-xl">
-                <table class="w-full text-sm text-right text-gray-500">
-                    <thead class="text-xs text-gray-700 uppercase bg-gray-200">
+
+            <!-- File Attachments Section -->
+            <div class="pt-6 border-t">
+                 <h3 class="text-lg font-medium text-gray-900 mb-4">المرفقات</h3>
+                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <div>
+                        <label for="doctorFile" class="block text-sm font-medium text-gray-700">مرفق الطبيب</label>
+                        <input type="file" id="doctorFile" name="doctorFile" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
+                    </div>
+                     <div>
+                        <label for="hospitalFile" class="block text-sm font-medium text-gray-700">مرفق المستشفى</label>
+                        <input type="file" id="hospitalFile" name="hospitalFile" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
+                    </div>
+                    <div>
+                        <label for="laboratoryFile" class="block text-sm font-medium text-gray-700">مرفق المختبر</label>
+                        <input type="file" id="laboratoryFile" name="laboratoryFile" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
+                    </div>
+                     <div>
+                        <label for="pharmacyFile" class="block text-sm font-medium text-gray-700">مرفق الصيدلية</label>
+                        <input type="file" id="pharmacyFile" name="pharmacyFile" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
+                    </div>
+                    <div>
+                        <label for="radiologyFile" class="block text-sm font-medium text-gray-700">مرفق الأشعة</label>
+                        <input type="file" id="radiologyFile" name="radiologyFile" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
+                    </div>
+                 </div>
+            </div>
+
+            <div class="flex items-center justify-end space-x-4 pt-5">
+                <button type="button" id="clear-button" class="bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-6 rounded-lg transition duration-300">مسح النموذج</button>
+                <button type="submit" id="save-button" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg transition duration-300">حفظ السجل</button>
+            </div>
+        </form>
+
+        <div class="mt-10 pt-6 border-t">
+            <div class="flex flex-col md:flex-row justify-between items-center mb-4 gap-4">
+                 <h2 class="text-2xl font-bold text-gray-800">قائمة السجلات</h2>
+                 <div class="flex items-center gap-4 w-full md:w-auto">
+                    <select id="filter-column-select" class="block w-full md:w-auto px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+                         <option value="approvalNumber">رقم الموافقة</option>
+                         <option value="formNumber">رقم النموذج</option>
+                         <option value="patientName">اسم المريض</option>
+                         <option value="doctorName">اسم الطبيب</option>
+                         <option value="hospital">المستشفى</option>
+                    </select>
+                    <input type="text" id="filter-input" placeholder="ابحث هنا..." class="block w-full md:w-auto px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+                 </div>
+                 <div class="flex items-center gap-2">
+                     <button id="export-button" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition duration-300">تصدير</button>
+                     <button id="import-button" class="bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 px-4 rounded-lg transition duration-300">استيراد</button>
+                     <input type="file" id="import-file-input" class="hidden" accept=".json">
+                </div>
+            </div>
+            <div class="overflow-x-auto bg-white rounded-lg shadow">
+                 <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
                         <tr>
-                            <th scope="col" class="py-3 px-6 text-center">رقم الموافقة</th>
-                            <th scope="col" class="py-3 px-6 text-center">رقم النموذج</th>
-                            <th scope="col" class="py-3 px-6 text-center">اسم المريض</th>
-                            <th scope="col" class="py-3 px-6 text-center">اسم الطبيب</th>
-                            <th scope="col" class="py-3 px-6 text-center">التخصص</th>
-                            <th scope="col" class="py-3 px-6 text-center">تاريخ المعالجة</th>
-                            <th scope="col" class="py-3 px-6 text-center">المستشفى</th>
-                            <th scope="col" class="py-3 px-6 text-center">تاريخ معالجة المستشفى</th>
-                            <th scope="col" class="py-3 px-6 text-center">المختبر</th>
-                            <th scope="col" class="py-3 px-6 text-center">تاريخ معالجة المختبر</th>
-                            <th scope="col" class="py-3 px-6 text-center">الصيدلية</th>
-                            <th scope="col" class="py-3 px-6 text-center">تاريخ معالجة الصيدلية</th>
-                            <th scope="col" class="py-3 px-6 text-center">الاشعة</th>
-                            <th scope="col" class="py-3 px-6 text-center">تاريخ معالجة الأشعة</th>
-                            <th scope="col" class="py-3 px-6 text-center">رسوم النموذج</th>
-                            <th scope="col" class="py-3 px-6 text-center">تاريخ النموذج</th>
-                            <th scope="col" class="py-3 px-6 text-center">تاريخ التأثير على الرصيد</th>
-                            <th scope="col" class="py-3 px-6 text-center">تاريخ الإدخال (ميلادي)</th>
-                            <th scope="col" class="py-3 px-6 text-center">المرفقات</th>
-                            <th scope="col" class="py-3 px-6 text-center">إجراءات</th>
+                            <!-- Table Headers -->
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">رقم الموافقة</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">رقم النموذج</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">اسم المريض</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">اسم الطبيب</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">التخصص</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">تاريخ المعالجة</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">المستشفى</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">تاريخ المستشفى</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">المختبر</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">تاريخ المختبر</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">الصيدلية</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">تاريخ الصيدلية</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">الأشعة</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">تاريخ الأشعة</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">رسوم النموذج</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">تاريخ النموذج</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">تاريخ الرصيد</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">تاريخ الإدخال</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">المرفقات</th>
+                            <th class="p-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-center">إجراءات</th>
                         </tr>
                     </thead>
                     <tbody id="records-table-body" class="bg-white divide-y divide-gray-200">
-                        <!-- Records will be dynamically inserted here -->
+                        <!-- Rows will be inserted here by JavaScript -->
                     </tbody>
                 </table>
             </div>
-            <!-- Buttons moved here -->
-            <div class="mt-4 flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4 justify-center">
-                <button id="export-button" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-full transition duration-300 ease-in-out transform hover:scale-105 whitespace-nowrap">
-                    تصدير قاعدة بيانات
-                </button>
-                <button id="import-button" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-full transition duration-300 ease-in-out transform hover:scale-105 whitespace-nowrap">
-                    استيراد قاعدة بيانات
-                </button>
-                <input type="file" id="import-file-input" class="hidden" accept=".json">
+        </div>
+    </div>
+
+    <!-- Confirmation Modal for Deletion -->
+    <div id="confirmation-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
+        <div class="relative mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+            <div class="mt-3 text-center">
+                <div class="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-red-100">
+                    <svg class="h-6 w-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                </div>
+                <h3 class="text-lg leading-6 font-medium text-gray-900 mt-2">تأكيد الحذف</h3>
+                <div class="mt-2 px-7 py-3">
+                    <p class="text-sm text-gray-500">هل أنت متأكد من أنك تريد حذف هذا السجل؟ لا يمكن التراجع عن هذا الإجراء.</p>
+                </div>
+                <div class="items-center px-4 py-3">
+                    <button id="confirm-delete" class="px-4 py-2 bg-red-500 text-white text-base font-medium rounded-md w-auto shadow-sm hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500">نعم، احذف</button>
+                    <button id="cancel-delete" class="px-4 py-2 bg-gray-200 text-gray-800 text-base font-medium rounded-md w-auto ml-2 shadow-sm hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500">إلغاء</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirmation Modal for Import -->
+    <div id="import-confirmation-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
+        <div class="relative mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+            <div class="mt-3 text-center">
+                <div class="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-yellow-100">
+                    <svg class="h-6 w-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                </div>
+                <h3 class="text-lg leading-6 font-medium text-gray-900 mt-2">تأكيد الاستيراد</h3>
+                <div class="mt-2 px-7 py-3">
+                    <p class="text-sm text-gray-500">سيؤدي هذا إلى الكتابة فوق أي سجلات موجودة بنفس المعرفات. هل تريد المتابعة؟</p>
+                </div>
+                <div class="items-center px-4 py-3">
+                    <button id="confirm-import" class="px-4 py-2 bg-purple-500 text-white text-base font-medium rounded-md w-auto shadow-sm hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500">نعم، استورد</button>
+                    <button id="cancel-import" class="px-4 py-2 bg-gray-200 text-gray-800 text-base font-medium rounded-md w-auto ml-2 shadow-sm hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500">إلغاء</button>
+                </div>
             </div>
         </div>
     </div>
     
-    <!-- Custom Confirmation Modal (replaces alert/confirm) -->
-    <div id="confirmation-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
-        <div class="relative bg-white p-8 rounded-lg shadow-xl max-w-sm mx-auto text-center">
-            <h3 class="text-lg font-bold text-gray-900 mb-4">تأكيد الحذف</h3>
-            <p class="text-sm text-gray-500 mb-6">هل أنت متأكد من أنك تريد حذف هذا السجل؟</p>
-            <div class="flex justify-center space-x-4">
-                <button id="cancel-delete" class="px-4 py-2 bg-gray-300 text-gray-800 rounded-full hover:bg-gray-400 transition-colors">إلغاء</button>
-                <button id="confirm-delete" class="px-4 py-2 bg-red-600 text-white rounded-full hover:bg-red-700 transition-colors">حذف</button>
-            </div>
+    <!-- Loading Indicator -->
+    <div id="loading-indicator" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 h-full w-full items-center justify-center">
+        <div class="flex flex-col items-center">
+             <div class="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-white"></div>
+             <p class="text-white mt-4 text-lg">جارٍ التحميل...</p>
         </div>
     </div>
 
-    <div id="import-confirmation-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
-        <div class="relative bg-white p-8 rounded-lg shadow-xl max-w-sm mx-auto text-center">
-            <h3 class="text-lg font-bold text-gray-900 mb-4">تأكيد الاستيراد</h3>
-            <p class="text-sm text-gray-500 mb-6">سيتم إضافة السجلات الجديدة إلى قاعدة البيانات الحالية. هل أنت متأكد من المتابعة؟</p>
-            <div class="flex justify-center space-x-4">
-                <button id="cancel-import" class="px-4 py-2 bg-gray-300 text-gray-800 rounded-full hover:bg-gray-400 transition-colors">إلغاء</button>
-                <button id="confirm-import" class="px-4 py-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors">تأكيد</button>
-            </div>
-        </div>
-    </div>
 </body>
 </html>
+
