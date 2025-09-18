@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>نظام إدخال مطالبات التأمين الصحي - Google Integration</title>
+    <title>نظام إدخال مطالبات التأمين الصحي</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://apis.google.com/js/api.js"></script>
     <style>
@@ -278,7 +278,7 @@
 
     <script>
         // إعدادات Google API
-        const CLIENT_ID = '696330237242-oei5b5k6njmfjva5tkj8ifcrvjvjo6k7.apps.googleusercontent.com';
+        const CLIENT_ID = '696330237242-saogi2mnnmubpi6fffe6j69v3k7dgh55.apps.googleusercontent.com';
         const API_KEY = 'AIzaSyC8mQ9v1MfAqPXzqeV850ETHrrFqiaExqs';
         const SPREADSHEET_ID = '1gokXoCPd9XtH7eq92MGJF-d5hEmDgjGEJV5Gk4_9hJk';
         const DRIVE_FOLDER_ID = '1FMl04vxqLZ02DyB8cy4YItDw_vV9tY_7';
@@ -489,64 +489,4 @@
                             media: media,
                             fields: 'id,webViewLink'
                         });
-                        const fileId = uploadResponse.result.id;
-                        const webViewLink = uploadResponse.result.webViewLink || `https://drive.google.com/file/d/${fileId}/view`;
-                        attachmentLinks.push(webViewLink);
-                        await gapi.client.drive.permissions.create({
-                            fileId: fileId,
-                            resource: {
-                                role: 'reader',
-                                type: 'anyone'
-                            }
-                        });
-                    } catch (err) {
-                        attachmentLinks.push('');
-                        console.error('File upload error:', err);
-                    }
-                } else {
-                    attachmentLinks.push('');
-                }
-            }
-            recordData.push(attachmentLinks.join(','));
-            recordData.push(new Date().toLocaleString('en-GB'));
-            recordData.push(Date.now().toString());
-
-            try {
-                await gapi.client.sheets.spreadsheets.values.append({
-                    spreadsheetId: SPREADSHEET_ID,
-                    range: 'Sheet1!A2:T',
-                    valueInputOption: 'RAW',
-                    resource: {
-                        values: [recordData]
-                    }
-                });
-                showMessage('تم حفظ السجل بنجاح', 'success');
-                e.target.reset();
-                loadRecords();
-            } catch (error) {
-                console.error('Error saving record:', error);
-                showMessage('حدث خطأ أثناء حفظ السجل', 'error');
-            }
-            saveButton.disabled = false;
-            saveButtonText.textContent = 'حفظ السجل';
-        });
-
-        function showMessage(message, type = 'info') {
-            const box = document.getElementById('message-box');
-            box.textContent = message;
-            box.className = `p-4 rounded-lg text-center mb-4 ${type === 'error' ? 'bg-red-100 text-red-700' : type === 'success' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`;
-            box.classList.remove('hidden');
-            setTimeout(() => box.classList.add('hidden'), 3500);
-        }
-
-        window.onload = handleClientLoad;
-        document.getElementById('search-input').addEventListener('input', filterAndDisplayRecords);
-        document.getElementById('filter-column').addEventListener('change', filterAndDisplayRecords);
-        document.getElementById('refresh-button').addEventListener('click', loadRecords);
-
-        document.getElementById('clear-button').addEventListener('click', function() {
-            document.getElementById('record-form').reset();
-        });
-    </script>
-</body>
-</html>
+                        const file
